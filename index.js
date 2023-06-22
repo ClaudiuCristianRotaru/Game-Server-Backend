@@ -8,8 +8,8 @@ const axios = require('axios').default
 const crypto = require('crypto');
 const { Worker } = require('node:worker_threads');
 
-
-const DEFAULT_TIME_CONTROL = 25000;
+const K_FACTOR = 20;
+const DEFAULT_TIME_CONTROL = 180000;
 const MAX_SEARCH_RANGE = 200;
 const STARTING_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
 const worker = new Worker("./worker.js");
@@ -99,7 +99,7 @@ function endGame(params) {
             black_id: rooms.get(params.room).blackId,
         });
 
-    updateRatings(rooms.get(params.room).whiteId, rooms.get(params.room).blackId, params.status.result);
+    updateRatings(rooms.get(params.room).whiteId, rooms.get(params.room).blackId, params.status.result, params.material);
     rooms.delete(params.room);
 }
 
@@ -145,7 +145,7 @@ function checkUidInGame(uid) {
     return roomResult;
 }
 
-async function updateRatings(white_id, black_id, result) {
+async function updateRatings(white_id, black_id, result, material) {
 
     let white_player = (await axios.get(`http://localhost:3000/user/id/${white_id}`)).data;
     let black_player = (await axios.get(`http://localhost:3000/user/id/${black_id}`)).data;
@@ -159,8 +159,22 @@ async function updateRatings(white_id, black_id, result) {
         case "Draw": res = 0.5; break;
         case "Black win": res = 0; break;
     }
-    let newWhiteRating = white_player.rating + 20 * (res - probabilityWhiteWin);
-    let newBlackRating = black_player.rating + 20 * ((1 - res) - probabilityBlackWin);
+
+    let whiteGain = K_FACTOR * (res - probabilityWhiteWin)
+    let blackGain = K_FACTOR * ((1 - res) - probabilityBlackWin);
+    let whiteBonus = 0;
+    let blackBonus = 0
+    if (res == 1 && material < 0) {
+        whiteBonus = whiteGain * (-material / 50);
+        blackBonus = -whiteBonus
+    }
+    if (res == 0 && material > 0) {
+        blackBonus = blackGain * material / 50;
+        whiteBonus = -blackBonus
+    }
+
+    let newWhiteRating = white_player.rating + whiteGain + whiteBonus;
+    let newBlackRating = black_player.rating + blackGain + blackBonus;
 
     await axios.patch(`http://localhost:3000/user/id/${white_id}`, {
         id: white_id,
@@ -191,8 +205,8 @@ function findQueuePairs() {
             }
         }
         if (queue[i]) {
-            if (queue[i].ratingOffset < MAX_SEARCH_RANGE) { 
-                queue[i].ratingOffset += 10; 
+            if (queue[i].ratingOffset < MAX_SEARCH_RANGE) {
+                queue[i].ratingOffset += 10;
             }
         }
     }
